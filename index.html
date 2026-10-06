@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Осмотр — полевой тест</title>
+<style>
+:root{--bg:#f6f5f1;--fg:#1d1d1b;--muted:#6b6a65;--card:#fff;--line:#d9d6cc;
+  --green:#1f8a4c;--yellow:#c98a00;--red:#b3261e;--grey:#7a7a7a;--accent:#1d4e89}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#151514;--fg:#eceae4;--muted:#a3a19a;--card:#1f1f1d;--line:#3a3935;--accent:#7fb0ff}}
+:root[data-theme="dark"]{--bg:#151514;--fg:#eceae4;--muted:#a3a19a;--card:#1f1f1d;--line:#3a3935;--accent:#7fb0ff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:12px 16px 40px}
+h1{font-size:18px;margin:0 0 8px}
+.state{border-radius:14px;padding:18px 16px;color:#fff;background:var(--grey);margin:8px 0}
+.state b{display:block;font-size:24px}
+.state.green{background:var(--green)}.state.yellow{background:var(--yellow)}.state.red{background:var(--red)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;margin:10px 0}
+button,select,input{font:inherit;color:inherit}
+button{background:var(--accent);color:#fff;border:0;border-radius:10px;padding:12px 14px;margin:4px 4px 4px 0;min-height:44px}
+button.sec{background:transparent;color:var(--accent);border:1px solid var(--accent)}
+select,input{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px;max-width:100%}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;font-size:14px}
+.grid span{color:var(--muted)}
+svg{width:100%;height:auto;background:var(--card);border:1px solid var(--line);border-radius:12px;touch-action:none}
+.small{font-size:13px;color:var(--muted)}
+label{display:block;margin:6px 0 2px;font-size:14px;color:var(--muted)}
+#log{font:12px/1.3 ui-monospace,Consolas,monospace;max-height:140px;overflow:auto;white-space:pre-wrap}
+</style>
+</head>
+<body>
+<h1>Осмотр — полевой тест геолокации</h1>
+<div class="small" id="ver"></div>
+
+<div class="card">
+  <b>Участки</b> <span class="small" id="plotsInfo">не загружены</span>
+  <div class="small">Файл с контурами (plots.geojson) пришлёт Claude в Telegram — выберите его здесь. Хранится только в этом телефоне.</div>
+  <input type="file" id="plotsFile" accept=".geojson,.json,application/json">
+</div>
+
+<div class="state" id="state"><b id="stTitle">Не запущено</b><span id="stText">Нажмите «Старт» и стойте на месте 30 секунд.</span></div>
+
+<div>
+  <button id="btnStart">Старт</button>
+  <button id="btnStop" class="sec">Стоп</button>
+</div>
+
+<div class="card">
+  <div class="grid">
+    <span>Точек в окне</span><div id="vN">—</div>
+    <span>Точность телефона (медиана)</span><div id="vAcc">—</div>
+    <span>Оценка ошибки σ</span><div id="vSigma">—</div>
+    <span>Запас R</span><div id="vR">—</div>
+    <span>До границы d (+ внутри)</span><div id="vD">—</div>
+    <span>Участок</span><div id="vPlot">—</div>
+    <span>Всего точек записано</span><div id="vTotal">0</div>
+  </div>
+</div>
+
+<svg id="map" viewBox="0 0 400 400" aria-label="Схема участков и точек"></svg>
+<div class="small">Серые контуры — участки, синие точки — сырые точки телефона, кольцо — оценка места и запас R.</div>
+
+<div class="card">
+  <b>Где вы на самом деле</b>
+  <div class="small">Отметка — главное для настройки порогов. Нажимайте, когда стоите на месте не меньше 30 секунд.</div>
+  <label for="truthPlot">Участок</label>
+  <select id="truthPlot"></select>
+  <div>
+    <button data-truth="inside">Я внутри</button>
+    <button data-truth="border" class="sec">Я на границе</button>
+    <button data-truth="outside" class="sec">Я снаружи</button>
+  </div>
+  <label for="note">Заметка (лес, постройки, межевой знак…)</label>
+  <input id="note" placeholder="необязательно" style="width:100%">
+</div>
+
+<div class="card">
+  <b>Сохранить замеры</b>
+  <div class="small">Данные хранятся только в этом телефоне, пока вы их не отправите.</div>
+  <button id="btnShare">Отправить файлом</button>
+  <button id="btnDownload" class="sec">Скачать файл</button>
+  <button id="btnClear" class="sec">Очистить</button>
+</div>
+
+<details class="card">
+  <summary>Пороги (предложения, меняются для теста)</summary>
+  <label>Отбрасывать точки с точностью хуже, м</label><input id="pAccMax" type="number" value="25">
+  <label>Окно серии, с</label><input id="pWindow" type="number" value="30">
+  <label>Минимум точек</label><input id="pMinFix" type="number" value="10">
+  <label>Множитель уверенности K</label><input id="pK" type="number" step="0.1" value="2.0">
+  <label>Время корреляции ошибок, с</label><input id="pCorr" type="number" value="10">
+  <label>Нижний предел σ, м</label><input id="pFloor" type="number" step="0.1" value="1.5">
+  <label>Допуск границы, м</label><input id="pTol" type="number" step="0.1" value="2.5">
+  <label>Гистерезис, м</label><input id="pHyst" type="number" step="0.1" value="1.0">
+</details>
+
+<details class="card"><summary>Журнал</summary><div id="log"></div></details>
+
+<script>
+"use strict";
+const VERSION = "osmotr-test v1 · 07.10.2026";
+document.getElementById("ver").textContent = VERSION;
+const STORE_KEY = "osmotr_test_v1";
+const $ = id => document.getElementById(id);
+
+// ---------- хранение (может не работать в приватном режиме — тогда только память) ----------
+let session = {version: VERSION, device: navigator.userAgent, started: new Date().toISOString(),
+               fixes: [], truths: [], states: []};
+try { const s = localStorage.getItem(STORE_KEY); if (s) session = JSON.parse(s); } catch (e) {}
+function save(){ try { localStorage.setItem(STORE_KEY, JSON.stringify(session)); } catch (e) { log("не сохранилось в памяти телефона: " + e.message); } }
+function log(msg){ const el=$("log"); el.textContent = new Date().toLocaleTimeString()+" "+msg+"\n"+el.textContent; }
+
+// ---------- участки ----------
+let plots = [];   // {kn, rings:[[[lon,lat]...]...] (первое кольцо внешнее)}
+const PLOTS_KEY = "osmotr_test_plots";
+// Контуры не лежат на публичной странице: их загружают файлом в телефоне (или plots.geojson рядом — для локальной проверки).
+function loadPlots(gj, src){
+  plots = []; origin = null;
+  for (const f of gj.features || []) {
+    const g = f.geometry; if (!g) continue;
+    const polys = g.type === "Polygon" ? [g.coordinates] : g.type === "MultiPolygon" ? g.coordinates : [];
+    polys.forEach((rings, i) => plots.push({kn: (f.properties && (f.properties.kn || f.properties.cad_num)) || ("участок " + (plots.length+1)) + (polys.length>1 ? " ч."+(i+1) : ""), rings}));
+  }
+  session.plots = gj;
+  $("truthPlot").innerHTML = plots.map((p,i)=>`<option value="${i}">${p.kn.replace(/[<>&"]/g,"")}</option>`).join("");
+  $("plotsInfo").textContent = plots.length + " шт. (" + src + ")";
+  log("участков загружено: " + plots.length + " из " + src);
+  buf = []; draw();
+}
+$("plotsFile").onchange = e => {
+  const file = e.target.files[0]; if (!file) return;
+  file.text().then(t => { const gj = JSON.parse(t); loadPlots(gj, "файл");
+    try { localStorage.setItem(PLOTS_KEY, t); } catch (er) {} })
+    .catch(er => log("файл участков не прочитан: " + er.message));
+};
+// Запуск после того, как весь скрипт объявлен (loadPlots трогает buf и origin ниже).
+setTimeout(() => {
+  let savedPlots = null;
+  try { savedPlots = localStorage.getItem(PLOTS_KEY); } catch (e) {}
+  if (savedPlots) { try { loadPlots(JSON.parse(savedPlots), "сохранены в телефоне"); } catch (e) { log("сохранённые участки битые"); } }
+  else fetch("plots.geojson", {cache:"no-store"}).then(r => r.ok ? r.json() : Promise.reject(r.status))
+    .then(gj => loadPlots(gj, "рядом со страницей"))
+    .catch(e => log("участков рядом со страницей нет — загрузите файл"));
+}, 0);
+
+// ---------- геометрия: локальная проекция в метрах вокруг первой точки/участка ----------
+let origin = null;
+function proj(lon, lat){
+  if (!origin) origin = {lon, lat};
+  const R = 6371008.8, k = Math.PI/180;
+  return [ (lon-origin.lon)*k*R*Math.cos(origin.lat*k), (lat-origin.lat)*k*R ];
+}
+function segDist(p,a,b){
+  const dx=b[0]-a[0], dy=b[1]-a[1], L=dx*dx+dy*dy;
+  let t = L ? ((p[0]-a[0])*dx+(p[1]-a[1])*dy)/L : 0; t=Math.max(0,Math.min(1,t));
+  return Math.hypot(p[0]-a[0]-t*dx, p[1]-a[1]-t*dy);
+}
+function inRing(p, ring){
+  let c=false;
+  for (let i=0,j=ring.length-1;i<ring.length;j=i++){
+    const a=ring[i], b=ring[j];
+    if ((a[1]>p[1])!==(b[1]>p[1]) && p[0] < (b[0]-a[0])*(p[1]-a[1])/(b[1]-a[1])+a[0]) c=!c;
+  }
+  return c;
+}
+// знаковое расстояние: + внутри (внешнее кольцо и не в дырке), − снаружи
+function signedDist(pm, plot){
+  const rings = plot.rings.map(r => r.map(c => proj(c[0], c[1])));
+  let dmin = Infinity;
+  for (const r of rings) for (let i=0;i<r.length-1;i++) dmin = Math.min(dmin, segDist(pm, r[i], r[i+1]));
+  const inside = inRing(pm, rings[0]) && !rings.slice(1).some(h => inRing(pm, h));
+  return inside ? dmin : -dmin;
+}
+
+// ---------- алгоритм (раздел 4 исследования) ----------
+const num = id => parseFloat($(id).value);
+let buf = [], watchId = null, lastGreen = false, wakeLock = null;
+
+function onFix(pos){
+  const c = pos.coords;
+  const fix = {t: pos.timestamp, lat: c.latitude, lon: c.longitude, acc: c.accuracy,
+               alt: c.altitude, altAcc: c.altitudeAccuracy, spd: c.speed, hdg: c.heading};
+  session.fixes.push(fix); $("vTotal").textContent = session.fixes.length;
+  if (session.fixes.length % 10 === 0) save();
+  if (fix.acc > num("pAccMax")) { log("точка отброшена: точность " + fix.acc.toFixed(1) + " м"); evaluate(); return; }
+  const pm = proj(fix.lon, fix.lat);
+  const prev = buf[buf.length-1];
+  if (prev && (fix.t - prev.t) > 0) {
+    const v = Math.hypot(pm[0]-prev.pm[0], pm[1]-prev.pm[1]) / ((fix.t - prev.t)/1000);
+    if (v > 3) { buf = []; log("движение " + v.toFixed(1) + " м/с — серия сброшена"); }
+  }
+  buf.push({...fix, pm});
+  const win = num("pWindow")*1000;
+  buf = buf.filter(f => fix.t - f.t <= win);
+  evaluate();
+}
+
+function median(a){ const s=[...a].sort((x,y)=>x-y), n=s.length; return n ? (n%2 ? s[(n-1)/2] : (s[n/2-1]+s[n/2])/2) : NaN; }
+
+function evaluate(){
+  const minFix = num("pMinFix");
+  $("vN").textContent = buf.length;
+  if (buf.length < minFix) { setState("grey", "Уточняем место…", `${buf.length} из ${minFix} точек. Стойте на месте.`); draw(); return; }
+  const mx = median(buf.map(f=>f.pm[0])), my = median(buf.map(f=>f.pm[1]));
+  const dists = buf.map(f => Math.hypot(f.pm[0]-mx, f.pm[1]-my));
+  const mad = median(dists.map(d => Math.abs(d - median(dists))));
+  const accMed = median(buf.map(f=>f.acc));
+  const keep = buf.filter((f,i) => dists[i] <= Math.max(3*1.4826*mad, accMed));
+  let sw=0, sx=0, sy=0;
+  for (const f of keep){ const w = 1/(f.acc*f.acc); sw+=w; sx+=w*f.pm[0]; sy+=w*f.pm[1]; }
+  const P = [sx/sw, sy/sw];
+  const dur = (keep[keep.length-1].t - keep[0].t)/1000;
+  const nEff = Math.max(1, dur / num("pCorr"));
+  const spread = Math.sqrt(keep.reduce((s,f)=>s+(f.pm[0]-P[0])**2+(f.pm[1]-P[1])**2,0)/keep.length);
+  const sigma = Math.max(median(keep.map(f=>f.acc))/Math.sqrt(nEff), num("pFloor"), spread);
+  const R = num("pK")*sigma + num("pTol");
+  $("vAcc").textContent = accMed.toFixed(1) + " м";
+  $("vSigma").textContent = sigma.toFixed(1) + " м";
+  $("vR").textContent = R.toFixed(1) + " м";
+
+  let st = {t: Date.now(), P: unproj(P), sigma, R, n: keep.length, dur};
+  if (!plots.length) { setState("grey", "Участков нет", "Записываем точки без участков."); st.state="noplots"; }
+  else {
+    const ds = plots.map(p => signedDist(P, p));
+    let best = 0; ds.forEach((d,i)=>{ if (d > ds[best]) best = i; });
+    const d = ds[best], plot = plots[best];
+    const near = plots.map((p,i)=>({kn:p.kn, d:ds[i]})).filter((x,i)=> i!==best && Math.abs(x.d) < R);
+    $("vD").textContent = d.toFixed(1) + " м"; $("vPlot").textContent = plot.kn;
+    const need = lastGreen ? R - num("pHyst") : R;
+    if (d >= need) { lastGreen = true; st.state="green";
+      setState("green", "Вы на участке", plot.kn); }
+    else if (d > -R) { lastGreen = false; st.state="yellow";
+      setState("yellow", "Вы у границы", plot.kn + (near.length ? " или на соседнем " + near.map(n=>n.kn).join(", ") : "") + ". Отойдите к центру."); }
+    else { lastGreen = false; st.state="red";
+      setState("red", "Вы снаружи", "До участка " + plot.kn + " примерно " + (-d).toFixed(0) + " м."); }
+    st.plot = plot.kn; st.d = d; st.near = near.map(n=>n.kn);
+  }
+  session.states.push(st);
+  draw(P, R);
+}
+function unproj(p){ const R=6371008.8,k=Math.PI/180; return [origin.lon + p[0]/(k*R*Math.cos(origin.lat*k)), origin.lat + p[1]/(k*R)]; }
+
+function setState(cls, title, text){
+  const el=$("state"); el.className = "state " + cls; $("stTitle").textContent = title; $("stText").textContent = text;
+}
+
+// ---------- схема ----------
+function draw(P, R){
+  const svg = $("map"); const pts = [];
+  plots.forEach(p => p.rings[0].forEach(c => pts.push(proj(c[0],c[1]))));
+  buf.forEach(f => pts.push(f.pm));
+  if (!pts.length) { svg.innerHTML = ""; return; }
+  let x0=Math.min(...pts.map(p=>p[0])), x1=Math.max(...pts.map(p=>p[0])), y0=Math.min(...pts.map(p=>p[1])), y1=Math.max(...pts.map(p=>p[1]));
+  const pad = 10, span = Math.max(x1-x0, y1-y0, 20) + 2*pad;
+  const cx=(x0+x1)/2, cy=(y0+y1)/2, s = 400/span;
+  const X = x => 200 + (x-cx)*s, Y = y => 200 - (y-cy)*s;
+  let h = "";
+  plots.forEach(p => p.rings.forEach(r => {
+    h += `<polygon points="${r.map(c=>{const m=proj(c[0],c[1]);return X(m[0])+","+Y(m[1]);}).join(" ")}" fill="none" stroke="#888" stroke-width="1.5"/>`;
+  }));
+  buf.forEach(f => h += `<circle cx="${X(f.pm[0])}" cy="${Y(f.pm[1])}" r="2.5" fill="#2f6fd0" opacity=".6"/>`);
+  if (P) { h += `<circle cx="${X(P[0])}" cy="${Y(P[1])}" r="${Math.max(2,R*s)}" fill="none" stroke="#c98a00" stroke-width="2"/>`;
+           h += `<circle cx="${X(P[0])}" cy="${Y(P[1])}" r="4" fill="#c98a00"/>`; }
+  h += `<text x="8" y="392" font-size="12" fill="#888">10 м = ${(10*s).toFixed(0)} px</text>`;
+  svg.innerHTML = h;
+}
+
+// ---------- кнопки ----------
+$("btnStart").onclick = async () => {
+  if (!("geolocation" in navigator)) { setState("red","Нет геолокации","Браузер не даёт место. Нужен адрес https."); return; }
+  if (watchId !== null) return;
+  buf = []; lastGreen = false;
+  watchId = navigator.geolocation.watchPosition(onFix,
+    e => { log("ошибка геолокации: " + e.code + " " + e.message); setState("red","Нет места", e.message); },
+    {enableHighAccuracy: true, maximumAge: 0, timeout: 20000});
+  try { if ("wakeLock" in navigator) wakeLock = await navigator.wakeLock.request("screen"); } catch (e) {}
+  log("старт");
+};
+$("btnStop").onclick = () => {
+  if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+  watchId = null; try { wakeLock && wakeLock.release(); } catch (e) {}
+  save(); log("стоп"); setState("grey","Остановлено","Замеры сохранены в телефоне.");
+};
+document.querySelectorAll("[data-truth]").forEach(b => b.onclick = () => {
+  const last = session.states[session.states.length-1] || null;
+  const i = $("truthPlot").value;
+  session.truths.push({t: Date.now(), truth: b.dataset.truth, plot: plots[i] ? plots[i].kn : null,
+                       note: $("note").value, shown: last && last.state, d: last && last.d, R: last && last.R,
+                       params: {accMax:num("pAccMax"), win:num("pWindow"), minFix:num("pMinFix"), K:num("pK"),
+                                corr:num("pCorr"), floor:num("pFloor"), tol:num("pTol"), hyst:num("pHyst")}});
+  save(); log("отметка: " + b.dataset.truth + (last ? " (показано: " + last.state + ")" : ""));
+  $("note").value = "";
+});
+function fileBlob(){ session.exported = new Date().toISOString(); return new Blob([JSON.stringify(session)], {type:"application/json"}); }
+function fileName(){ return "osmotr_" + new Date().toISOString().slice(0,16).replace(/[:T]/g,"-") + ".json"; }
+$("btnDownload").onclick = () => { const a=document.createElement("a"); a.href=URL.createObjectURL(fileBlob()); a.download=fileName(); a.click(); };
+$("btnShare").onclick = async () => {
+  const f = new File([fileBlob()], fileName(), {type:"application/json"});
+  try { if (navigator.canShare && navigator.canShare({files:[f]})) await navigator.share({files:[f], title:"Замеры осмотра"});
+        else $("btnDownload").onclick(); } catch (e) { log("не отправилось: " + e.message); }
+};
+$("btnClear").onclick = () => {
+  if (!confirm("Удалить все замеры из телефона? Сначала отправьте файл.")) return;
+  session = {version: VERSION, device: navigator.userAgent, started: new Date().toISOString(), fixes: [], truths: [], states: []};
+  save(); $("vTotal").textContent = 0; log("очищено");
+};
+$("vTotal").textContent = session.fixes.length;
+</script>
+</body>
+</html>
